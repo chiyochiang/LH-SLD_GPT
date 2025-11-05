@@ -561,6 +561,31 @@ class UniversalLLMProcessor:
             "flash_attention": True
         }
     
+    @staticmethod
+    def clean_json_response(text: str) -> str:
+        """清理 LLM 回應中的 markdown 代碼塊標記
+        
+        Args:
+            text: 原始回應文本
+            
+        Returns:
+            清理後的 JSON 字串
+        """
+        # 移除 markdown 代碼塊標記
+        text = text.strip()
+        
+        # 移除開頭的 ```json 或 ```
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        
+        # 移除結尾的 ```
+        if text.endswith("```"):
+            text = text[:-3]
+        
+        return text.strip()
+    
     def validate_term_definition(self, term: str, definition: str, article_text: str, model: str) -> bool:
         """LLM 驗證名詞定義"""
         context = FileHandler.safe_truncate_text(article_text, 2000)
@@ -610,12 +635,15 @@ class UniversalLLMProcessor:
                     st.warning("驗證失敗：無法取得模型回應")
                     return True
             
+            # 清理 markdown 代碼塊標記
+            cleaned_result = self.clean_json_response(result)
+            
             try:
-                data = json.loads(result)
+                data = json.loads(cleaned_result)
                 first = data.get("results", [{}])[0]
                 return bool(first.get("defined"))
-            except Exception:
-                st.warning(f"驗證失敗：回傳格式錯誤 -> {result}")
+            except Exception as e:
+                st.warning(f"驗證失敗：JSON 解析錯誤 -> {str(e)}\n原始回應: {result[:200]}...")
                 return True
         except Exception as e:
             st.warning(f"驗證失敗：{str(e)}")
