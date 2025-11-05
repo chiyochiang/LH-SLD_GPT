@@ -1,0 +1,29 @@
+# =============================
+# 法規分析系統 - 通用版依賴套件
+# =============================
+
+# 核心框架
+streamlit>=1.28.0              # Web 應用框架
+
+# 資料處理
+pandas>=2.0.0                  # 資料分析與表格處理
+requests>=2.31.0               # HTTP 請求（用於 Ollama API）
+
+# Excel 匯出支援
+xlsxwriter>=3.1.0              # Excel 檔案寫入（pandas ExcelWriter 引擎）
+openpyxl>=3.1.0                # Excel 檔案讀取（選用，用於讀取 .xlsx）
+
+# AI 服務支援
+openai>=1.0.0                  # OpenAI API 與 Ollama 相容介面
+google-generativeai>=0.3.0     # Google Gemini API（選用）
+
+# =============================
+# Python 內建模組（無需安裝）
+# =============================
+# re          - 正則表達式
+# json        - JSON 處理
+# pathlib     - 路徑處理
+# io          - 檔案流處理
+# typing      - 類型提示
+# dataclasses - 資料類別
+# enum        - 列舉類型
