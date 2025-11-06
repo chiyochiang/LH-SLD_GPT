@@ -58,6 +58,7 @@ class Config:
     JSON_SOURCE_LABEL: str = "全國法規資料庫"
     AI_SOURCE_LABEL: str = "AI建議"
     MAX_CTX_CHARS: int = 16384
+    DEFAULT_MAX_CONTEXTS: int = 3  # 預設每個名詞的上下文數量
     
     # Ollama 設定
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
@@ -649,9 +650,9 @@ class UniversalLLMProcessor:
             st.warning(f"驗證失敗：{str(e)}")
             return True
     
-    def synthesize_definition(self, term: str, contexts: List[Dict], model: str) -> Tuple[str, str]:
+    def synthesize_definition(self, term: str, contexts: List[Dict], model: str, max_contexts: int = config.DEFAULT_MAX_CONTEXTS) -> Tuple[str, str]:
         """使用 AI 合成名詞定義，並回傳定義與上下文摘要"""
-        context_texts = "\n\n---\n\n".join([c.get("text", "") for c in contexts[:3]]) if contexts else ""
+        context_texts = "\n\n---\n\n".join([c.get("text", "") for c in contexts[:max_contexts]]) if contexts else ""
         truncated_contexts = FileHandler.safe_truncate_text(context_texts, 4000) if context_texts else ""
         
         if truncated_contexts:
@@ -980,9 +981,10 @@ class StreamlitUI:
 class LegalAnalysisEngine:
     """法規分析引擎"""
     
-    def __init__(self, llm_processor: UniversalLLMProcessor):
+    def __init__(self, llm_processor: UniversalLLMProcessor, max_contexts: int = config.DEFAULT_MAX_CONTEXTS):
         self.llm = llm_processor
         self.analyzer = LegalTextAnalyzer()
+        self.max_contexts = max_contexts  # 每個名詞的上下文數量限制
         # 載入 Origin JSON 字典
         self.origin_dict = FileHandler.load_origin_json()
         # 載入 Taide JSON 字典
@@ -1180,15 +1182,23 @@ class LegalAnalysisEngine:
             
             for t, d in candidates:
                 if t == term:
-                    modified_date = best_match.get("modified_date", "")
-                    date_display = f" ({modified_date})" if modified_date else ""
-                    source_label = f"【{best_match.get('source_type', '未知')}】{best_match['law']} {best_match['article']}{date_display}"
+                    # 建立所有相關法規來源的列表（使用 max_contexts 限制）
+                    source_labels = []
+                    for ctx in found_contexts[:self.max_contexts]:
+                        modified_date = ctx.get("modified_date", "")
+                        date_display = f" ({modified_date})" if modified_date else ""
+                        source_label = f"【{ctx.get('source_type', '未知')}】{ctx['law']} {ctx['article']}{date_display}"
+                        source_labels.append(source_label)
+                    
+                    # 用分號或換行連接多個法規來源
+                    combined_source = "\n".join(source_labels)
+                    
                     return {
                         "名詞": term,
                         "定義來源": config.JSON_SOURCE_LABEL,
-                        "法規來源": source_label,
+                        "法規來源": combined_source,
                         "定義": d,
-                        "來源依據(上下文)": "\n\n---\n\n".join([c["text"] for c in found_contexts[:3]]),
+                        "來源依據(上下文)": "\n\n---\n\n".join([c["text"] for c in found_contexts[:self.max_contexts]]),
                         "has_context": True  # 從 JSON 找到的一定有上下文
                     }
         
@@ -1213,21 +1223,39 @@ class LegalAnalysisEngine:
                         relaxed_law.append(context)
                     else:
                         relaxed_order.append(context)
+                    
+                    # 提早終止：收集足夠的上下文即可
+                    if len(relaxed_law) >= self.max_contexts and len(relaxed_order) >= self.max_contexts:
+                        break
             
             # 各類別內按修訂日期排序（由新到舊）
             relaxed_law.sort(key=lambda x: x.get("modified_date", ""), reverse=True)
             relaxed_order.sort(key=lambda x: x.get("modified_date", ""), reverse=True)
             
-            # 優先使用法規的上下文，再使用命令
-            found_contexts = (relaxed_law + relaxed_order)[:3]
+            # 優先使用法規的上下文，再使用命令（使用 max_contexts 限制）
+            found_contexts = (relaxed_law + relaxed_order)[:self.max_contexts]
         
         # 未找到，使用 AI 合成
-        synth_def, synth_context = self.llm.synthesize_definition(term, found_contexts, model)
-        suggested_source = "AI 合成建議"
+        synth_def, synth_context = self.llm.synthesize_definition(term, found_contexts, model, self.max_contexts)
+        
+        # 建立所有相關法規來源的列表（確保與上下文數量一致）
         if found_contexts:
-            first_ctx = found_contexts[0]
-            source_type = first_ctx.get('source_type', '未知')
-            suggested_source = f"【{source_type}】{first_ctx.get('law', '')} {first_ctx.get('article', '')}".strip()
+            source_labels = []
+            # 只使用與上下文相同數量的法規來源（使用 max_contexts）
+            for ctx in found_contexts[:self.max_contexts]:
+                modified_date = ctx.get("modified_date", "")
+                date_display = f" ({modified_date})" if modified_date else ""
+                source_label = f"【{ctx.get('source_type', '未知')}】{ctx.get('law', '')} {ctx.get('article', '')}{date_display}".strip()
+                if source_label:
+                    source_labels.append(source_label)
+            
+            # AI 合成時，標註參考的法規來源
+            if source_labels:
+                suggested_source = "AI 合成建議（參考來源：\n" + "\n".join(source_labels) + "）"
+            else:
+                suggested_source = "AI 合成建議"
+        else:
+            suggested_source = "AI 合成建議"
         
         return {
             "名詞": term,
@@ -1255,7 +1283,7 @@ def main():
     ) = StreamlitUI.render_sidebar()
     
     llm_processor = UniversalLLMProcessor(ai_service)
-    analysis_engine = LegalAnalysisEngine(llm_processor)
+    # 注意：analysis_engine 將在需要時創建，以便傳入 max_contexts
 
     def build_dataset_info(source: Dict[str, Any]) -> Dict[str, Any]:
         info: Dict[str, Any] = {
@@ -1318,6 +1346,14 @@ def main():
             if limit_files == 0:
                 limit_files = None
             
+            max_contexts = st.number_input(
+                "每個名詞的上下文數量", 
+                min_value=1, 
+                max_value=10, 
+                value=config.DEFAULT_MAX_CONTEXTS,
+                help="限制「法規來源」和「來源依據(上下文)」的數量"
+            )
+            
             use_llm_validation = st.checkbox("使用LLM驗證", value=True)
             include_json_search = st.checkbox("啟用主題字補查", value=False, 
                                              help="從 mojLawSplitJSON 補查未找到的主題字")
@@ -1327,6 +1363,9 @@ def main():
                     st.error("請提供至少一個法規 TXT 檔案")
                 else:
                     st.info("🔄 開始完整法規分析...")
+                    
+                    # 使用 max_contexts 創建分析引擎
+                    analysis_engine = LegalAnalysisEngine(llm_processor, max_contexts)
                     
                     rows = analysis_engine.analyze_full(
                         dataset_source,
